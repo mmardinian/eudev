@@ -26,15 +26,16 @@
 #include <dirent.h>
 #include <poll.h>
 #include <sys/stat.h>
-#include <sys/socket.h>
+//#include <sys/socket.h>
 #include <sys/un.h>
 #include <arpa/inet.h>
-#include <linux/netlink.h>
+//#include <linux/netlink.h>
 #include <linux/filter.h>
+#include <dbus/dbus.h>
 
 #include "libudev.h"
 #include "libudev-private.h"
-#include "socket-util.h"
+//#include "socket-util.h"
 #include "missing.h"
 
 /**
@@ -52,7 +53,7 @@
 struct udev_monitor {
         struct udev *udev;
         int refcount;
-        int sock;
+        DBusConnection* conn;
         union sockaddr_union snl;
         union sockaddr_union snl_trusted_sender;
         union sockaddr_union snl_destination;
@@ -163,10 +164,33 @@ static void monitor_set_nl_address(struct udev_monitor *udev_monitor) {
                 udev_monitor->snl.nl.nl_pid = snl.nl.nl_pid;
 }
 
-struct udev_monitor *udev_monitor_new_from_netlink_fd(struct udev *udev, const char *name, int fd)
+/**
+ * udev_monitor_new_from_dbus:
+ * @udev: udev library context
+ * @name: name of event source
+ *
+ * Create new udev monitor and connect to a specified event
+ * source. Valid sources identifiers are "udev" and "kernel".
+ *
+ * Applications should usually not connect directly to the
+ * "kernel" events, because the devices might not be useable
+ * at that time, before udev has configured them, and created
+ * device nodes. Accessing devices at the same time as udev,
+ * might result in unpredictable behavior. The "udev" events
+ * are sent out after udev has finished its event processing,
+ * all rules have been processed, and needed device nodes are
+ * created.
+ *
+ * The initial refcount is 1, and needs to be decremented to
+ * release the resources of the udev monitor.
+ *
+ * Returns: a new udev monitor, or #NULL, in case of an error
+ **/
+_public_ struct udev_monitor *udev_monitor_new_from_dbus(struct udev *udev, const char *name)
 {
         struct udev_monitor *udev_monitor;
         unsigned int group;
+        DBusError err;
 
         if (udev == NULL)
                 return NULL;
@@ -200,17 +224,22 @@ struct udev_monitor *udev_monitor_new_from_netlink_fd(struct udev *udev, const c
         if (udev_monitor == NULL)
                 return NULL;
 
-        if (fd < 0) {
-                udev_monitor->sock = socket(PF_NETLINK, SOCK_RAW|SOCK_CLOEXEC|SOCK_NONBLOCK, NETLINK_KOBJECT_UEVENT);
-                if (udev_monitor->sock < 0) {
-                        log_debug_errno(errno, "error getting socket: %m");
-                        free(udev_monitor);
-                        return NULL;
-                }
-        } else {
-                udev_monitor->bound = true;
-                udev_monitor->sock = fd;
-                monitor_set_nl_address(udev_monitor);
+        // initialise the error value
+        dbus_error_init(&err);
+
+        // connect to the DBUS system bus, and check for errors
+        udev_monitor->conn = dbus_bus_get(DBUS_BUS_SYSTEM, &err);
+        if (dbus_error_is_set(&err)) { 
+                log_debug_errno(errno, "Connection Error (%s)\n", err.message); 
+                dbus_error_free(&err); 
+                free(udev_monitor);
+                return NULL;
+        }
+
+        if (udev_monitor->conn  == NULL) { 
+                log_debug_errno(errno, "dbus connection failed\n"); 
+                free(udev_monitor);
+                return NULL;
         }
 
         udev_monitor->snl.nl.nl_family = AF_NETLINK;
@@ -221,33 +250,6 @@ struct udev_monitor *udev_monitor_new_from_netlink_fd(struct udev *udev, const c
         udev_monitor->snl_destination.nl.nl_groups = UDEV_MONITOR_UDEV;
 
         return udev_monitor;
-}
-
-/**
- * udev_monitor_new_from_netlink:
- * @udev: udev library context
- * @name: name of event source
- *
- * Create new udev monitor and connect to a specified event
- * source. Valid sources identifiers are "udev" and "kernel".
- *
- * Applications should usually not connect directly to the
- * "kernel" events, because the devices might not be useable
- * at that time, before udev has configured them, and created
- * device nodes. Accessing devices at the same time as udev,
- * might result in unpredictable behavior. The "udev" events
- * are sent out after udev has finished its event processing,
- * all rules have been processed, and needed device nodes are
- * created.
- *
- * The initial refcount is 1, and needs to be decremented to
- * release the resources of the udev monitor.
- *
- * Returns: a new udev monitor, or #NULL, in case of an error
- **/
-_public_ struct udev_monitor *udev_monitor_new_from_netlink(struct udev *udev, const char *name)
-{
-        return udev_monitor_new_from_netlink_fd(udev, name, -1);
 }
 
 static inline void bpf_stmt(struct sock_filter *inss, unsigned int *i,
@@ -397,29 +399,17 @@ int udev_monitor_allow_unicast_sender(struct udev_monitor *udev_monitor, struct 
  */
 _public_ int udev_monitor_enable_receiving(struct udev_monitor *udev_monitor)
 {
-        int err = 0;
-        const int on = 1;
+        DBusError err;
 
-        udev_monitor_filter_update(udev_monitor);
-
-        if (!udev_monitor->bound) {
-                err = bind(udev_monitor->sock,
-                           &udev_monitor->snl.sa, sizeof(struct sockaddr_nl));
-                if (err == 0)
-                        udev_monitor->bound = true;
+        // add a rule for which messages we want to see
+        dbus_bus_add_match(udev_monitor->conn, "type='signal',interface='io.veea.VeeaHub.HardwareMonitoringAgent.Events'", &err); // see signals from the given interface
+        dbus_connection_flush(udev_monitor->conn);
+        if (dbus_error_is_set(&err)) { 
+                log_debug_errno(errno, "Match Error (%s)\n", err.message);
+                dbus_error_free(&err); 
+                free(udev_monitor);
+                return NULL;
         }
-
-        if (err >= 0)
-                monitor_set_nl_address(udev_monitor);
-        else {
-                log_debug_errno(errno, "bind failed: %m");
-                return -errno;
-        }
-
-        /* enable receiving of sender credentials */
-        err = setsockopt(udev_monitor->sock, SOL_SOCKET, SO_PASSCRED, &on, sizeof(on));
-        if (err < 0)
-                log_debug_errno(errno, "setting SO_PASSCRED failed: %m");
 
         return 0;
 }
@@ -483,8 +473,8 @@ _public_ struct udev_monitor *udev_monitor_unref(struct udev_monitor *udev_monit
         udev_monitor->refcount--;
         if (udev_monitor->refcount > 0)
                 return NULL;
-        if (udev_monitor->sock >= 0)
-                close(udev_monitor->sock);
+        if (udev_monitor->conn >= 0)
+                dbus_connection_close(udev_monitor->conn);
         udev_list_cleanup(&udev_monitor->filter_subsystem_list);
         udev_list_cleanup(&udev_monitor->filter_tag_list);
         free(udev_monitor);
@@ -504,21 +494,6 @@ _public_ struct udev *udev_monitor_get_udev(struct udev_monitor *udev_monitor)
         if (udev_monitor == NULL)
                 return NULL;
         return udev_monitor->udev;
-}
-
-/**
- * udev_monitor_get_fd:
- * @udev_monitor: udev monitor
- *
- * Retrieve the socket file descriptor associated with the monitor.
- *
- * Returns: the socket file descriptor
- **/
-_public_ int udev_monitor_get_fd(struct udev_monitor *udev_monitor)
-{
-        if (udev_monitor == NULL)
-                return -EINVAL;
-        return udev_monitor->sock;
 }
 
 static int passes_filter(struct udev_monitor *udev_monitor, struct udev_device *udev_device)
@@ -580,6 +555,9 @@ tag:
  **/
 _public_ struct udev_device *udev_monitor_receive_device(struct udev_monitor *udev_monitor)
 {
+        DBusMessage* msg;
+        DBusMessageIter args;
+        DBusError err;
         struct udev_device *udev_device;
         struct msghdr smsg;
         struct iovec iov;
@@ -608,12 +586,49 @@ retry:
         smsg.msg_name = &snl;
         smsg.msg_namelen = sizeof(snl);
 
+        // non blocking read of the next available message
+        dbus_connection_read_write(udev_monitor->conn, 0);
+        msg = dbus_connection_pop_message(udev_monitor->conn);
+
         buflen = recvmsg(udev_monitor->sock, &smsg, 0);
-        if (buflen < 0) {
-                if (errno != EINTR)
-                        log_debug("unable to receive message");
+        if (msg == NULL) {
                 return NULL;
         }
+
+        if (!dbus_message_is_signal(msg, "io.veea.VeeaHub.HardwareMonitoringAgent.Events", "Insert") && 
+            !dbus_message_is_signal(msg, "io.veea.VeeaHub.HardwareMonitoringAgent.Events", "Remove")) {
+                log_debug("dbus - not an 'insert' or a 'remove' event");
+                // read the parameters
+                if (!dbus_message_iter_init(msg, &args))
+                        log_debug("Message Has No Parameters\n");
+                else if (DBUS_TYPE_STRING != dbus_message_iter_get_arg_type(&args)) 
+                        log_debug("Argument is not string!\n"); 
+                else
+                        dbus_message_iter_get_basic(&args, &sigvalue);
+                
+                log_debug("Got Signal with value %s\n", sigvalue);
+                return NULL;
+        }
+
+        // read the parameters
+        if (!dbus_message_iter_init(msg, &args))
+        {
+                log_debug("Message Has No Parameters\n");
+                return NULL;
+        }
+        else if (DBUS_TYPE_STRING != dbus_message_iter_get_arg_type(&args)) 
+        {
+                log_debug("Argument is not string!\n"); 
+                return NULL;
+        }
+        else
+        {
+                dbus_message_iter_get_basic(&args, &sigvalue);
+        }
+        
+        log_debug("Got Signal with value %s\n", sigvalue);
+
+        smsg = (struct msghdr)sigvalue;
 
         if (buflen < 32 || (smsg.msg_flags & MSG_TRUNC)) {
                 log_debug("invalid message length");
@@ -703,6 +718,8 @@ retry:
                         goto retry;
                 return NULL;
         }
+
+        dbus_message_unref(msg);
 
         return udev_device;
 }

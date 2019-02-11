@@ -1126,12 +1126,10 @@ int main(int argc, char *argv[]) {
         sigset_t mask;
         FILE *f;
         int fd_ctrl = -1;
-        int fd_netlink = -1;
         int fd_worker = -1;
         struct epoll_event ep_ctrl = { .events = EPOLLIN };
         struct epoll_event ep_inotify = { .events = EPOLLIN };
         struct epoll_event ep_signal = { .events = EPOLLIN };
-        struct epoll_event ep_netlink = { .events = EPOLLIN };
         struct epoll_event ep_worker = { .events = EPOLLIN };
         int r = 0, one = 1;
 
@@ -1212,12 +1210,11 @@ int main(int argc, char *argv[]) {
         }
         fd_ctrl = udev_ctrl_get_fd(udev_ctrl);
 
-        monitor = udev_monitor_new_from_netlink(udev, "kernel");
+        monitor = udev_monitor_new_from_dbus(udev, "kernel");
         if (!monitor) {
-                r = log_error_errno(EINVAL, "error initializing netlink socket");
+                r = log_error_errno(EINVAL, "error initializing dbus connection");
                 goto exit;
         }
-        fd_netlink = udev_monitor_get_fd(monitor);
 
         if (udev_monitor_enable_receiving(monitor) < 0) {
                 r = log_error_errno(EINVAL, "error binding netlink socket");
@@ -1339,7 +1336,6 @@ int main(int argc, char *argv[]) {
         ep_ctrl.data.fd = fd_ctrl;
         ep_inotify.data.fd = fd_inotify;
         ep_signal.data.fd = fd_signal;
-        ep_netlink.data.fd = fd_netlink;
         ep_worker.data.fd = fd_worker;
 
         fd_ep = epoll_create1(EPOLL_CLOEXEC);
@@ -1350,7 +1346,6 @@ int main(int argc, char *argv[]) {
         if (epoll_ctl(fd_ep, EPOLL_CTL_ADD, fd_ctrl, &ep_ctrl) < 0 ||
             epoll_ctl(fd_ep, EPOLL_CTL_ADD, fd_inotify, &ep_inotify) < 0 ||
             epoll_ctl(fd_ep, EPOLL_CTL_ADD, fd_signal, &ep_signal) < 0 ||
-            epoll_ctl(fd_ep, EPOLL_CTL_ADD, fd_netlink, &ep_netlink) < 0 ||
             epoll_ctl(fd_ep, EPOLL_CTL_ADD, fd_worker, &ep_worker) < 0) {
                 log_error_errno(errno, "fail to add fds to epoll: %m");
                 goto exit;
@@ -1361,7 +1356,7 @@ int main(int argc, char *argv[]) {
                 struct epoll_event ev[8];
                 int fdcount;
                 int timeout;
-                bool is_worker, is_signal, is_inotify, is_netlink, is_ctrl;
+                bool is_worker, is_signal, is_inotify, is_ctrl;
                 int i;
 
                 if (udev_exit) {
@@ -1371,7 +1366,6 @@ int main(int argc, char *argv[]) {
                                 fd_ctrl = -1;
                         }
                         if (monitor != NULL) {
-                                epoll_ctl(fd_ep, EPOLL_CTL_DEL, fd_netlink, NULL);
                                 udev_monitor_unref(monitor);
                                 monitor = NULL;
                         }
@@ -1450,12 +1444,10 @@ int main(int argc, char *argv[]) {
 
                 }
 
-                is_worker = is_signal = is_inotify = is_netlink = is_ctrl = false;
+                is_worker = is_signal = is_inotify = is_ctrl = false;
                 for (i = 0; i < fdcount; i++) {
                         if (ev[i].data.fd == fd_worker && ev[i].events & EPOLLIN)
                                 is_worker = true;
-                        else if (ev[i].data.fd == fd_netlink && ev[i].events & EPOLLIN)
-                                is_netlink = true;
                         else if (ev[i].data.fd == fd_signal && ev[i].events & EPOLLIN)
                                 is_signal = true;
                         else if (ev[i].data.fd == fd_inotify && ev[i].events & EPOLLIN)
@@ -1486,15 +1478,14 @@ int main(int argc, char *argv[]) {
                 if (is_worker)
                         worker_returned(fd_worker);
 
-                if (is_netlink) {
-                        struct udev_device *dev;
+                /* check new device on dbus */
+                struct udev_device *dev;
 
-                        dev = udev_monitor_receive_device(monitor);
-                        if (dev) {
-                                udev_device_ensure_usec_initialized(dev, NULL);
-                                if (event_queue_insert(dev) < 0)
-                                        udev_device_unref(dev);
-                        }
+                dev = udev_monitor_receive_device(monitor);
+                if (dev) {
+                        udev_device_ensure_usec_initialized(dev, NULL);
+                        if (event_queue_insert(dev) < 0)
+                                udev_device_unref(dev);
                 }
 
                 /* start new events */

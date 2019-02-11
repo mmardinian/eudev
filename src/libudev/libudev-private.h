@@ -72,12 +72,11 @@ int udev_device_update_db(struct udev_device *udev_device);
 int udev_device_delete_db(struct udev_device *udev_device);
 int udev_device_tag_index(struct udev_device *dev, struct udev_device *dev_old, bool add);
 
-/* libudev-monitor.c - netlink/unix socket communication  */
+/* libudev-monitor.c - dbus communication  */
 int udev_monitor_disconnect(struct udev_monitor *udev_monitor);
 int udev_monitor_allow_unicast_sender(struct udev_monitor *udev_monitor, struct udev_monitor *sender);
 int udev_monitor_send_device(struct udev_monitor *udev_monitor,
                              struct udev_monitor *destination, struct udev_device *udev_device);
-struct udev_monitor *udev_monitor_new_from_netlink_fd(struct udev *udev, const char *name, int fd);
 
 /* libudev-list.c */
 struct udev_list_node {

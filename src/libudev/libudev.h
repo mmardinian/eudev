@@ -121,7 +121,7 @@ struct udev_monitor *udev_monitor_ref(struct udev_monitor *udev_monitor);
 struct udev_monitor *udev_monitor_unref(struct udev_monitor *udev_monitor);
 struct udev *udev_monitor_get_udev(struct udev_monitor *udev_monitor);
 /* kernel and udev generated events over netlink */
-struct udev_monitor *udev_monitor_new_from_netlink(struct udev *udev, const char *name);
+struct udev_monitor *udev_monitor_new_from_dbus(struct udev *udev, const char *name);
 /* bind socket */
 int udev_monitor_enable_receiving(struct udev_monitor *udev_monitor);
 int udev_monitor_set_receive_buffer_size(struct udev_monitor *udev_monitor, int size);
