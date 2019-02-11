@@ -12,6 +12,9 @@ AM_CPPFLAGS = \
 	-DUDEV_VERSION=\"$(UDEV_VERSION)\" \
 	-I $(top_srcdir)/src/shared \
 	-I $(top_srcdir)/src/libudev
+	-I/usr/include/dbus-1.0 \
+	-I/usr/lib/dbus-1.0/include \
+	-ldbus-1
 
 bin_PROGRAMS = \
 	udevadm
