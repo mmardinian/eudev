@@ -20,7 +20,10 @@ AM_CPPFLAGS = \
 	-DUDEV_CONF_FILE=\"$(udevconffile)\" \
 	-DUDEV_HWDB_BIN=\"$(udevhwdbbin)\" \
 	-DUDEV_VERSION=$(UDEV_VERSION) \
-	-I $(top_srcdir)/src/shared
+	-I $(top_srcdir)/src/shared \
+	-I/usr/include/dbus-1.0 \
+	-I/usr/lib/dbus-1.0/include \
+	-ldbus-1
 
 lib_LTLIBRARIES = \
 	libudev.la
